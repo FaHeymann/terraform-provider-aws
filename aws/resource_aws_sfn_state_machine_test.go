@@ -85,6 +85,37 @@ func TestAccAWSSfnStateMachine_Tags(t *testing.T) {
 	})
 }
 
+func TestAccAWSSfnStateMachine_LoggingConfiguration(t *testing.T) {
+	name := acctest.RandString(10)
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSSfnStateMachineDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccAWSSfnStateMachineConfigLoggingConfiguration1(name),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSSfnExists("aws_sfn_state_machine.foo"),
+					resource.TestCheckResourceAttr("aws_sfn_state_machine.foo", "logging_configuration.%", "1"),
+					resource.TestCheckResourceAttrSet("aws_sfn_state_machine.foo", "logging_configuration.destination"),
+					resource.TestCheckResourceAttr("aws_sfn_state_machine.foo", "logging_configuration.level", "FATAL"),
+				),
+			},
+			{
+				Config: testAccAWSSfnStateMachineConfigLoggingConfiguration2(name),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSSfnExists("aws_sfn_state_machine.foo"),
+					resource.TestCheckResourceAttr("aws_sfn_state_machine.foo", "logging_configuration.%", "1"),
+					resource.TestCheckResourceAttrSet("aws_sfn_state_machine.foo", "logging_configuration.destination"),
+					resource.TestCheckResourceAttr("aws_sfn_state_machine.foo", "logging_configuration.level", "ALL"),
+					resource.TestCheckResourceAttr("aws_sfn_state_machine.foo", "logging_configuration.include_execution_data", "true"),
+				),
+			},
+		},
+	})
+}
+
 func testAccCheckAWSSfnExists(n string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[n]
@@ -498,4 +529,259 @@ tags = {
 }
 }
 `, rName, rName, rName, rName, rName, rName, tag1Key, tag1Value, tag2Key, tag2Value)
+}
+
+func testAccAWSSfnStateMachineConfigLoggingConfiguration1(rName string) string {
+	return fmt.Sprintf(`
+data "aws_partition" "current" {}
+
+data "aws_region" "current" {}
+
+resource "aws_iam_role_policy" "iam_policy_for_lambda" {
+  name = "iam_policy_for_lambda_%s"
+  role = "${aws_iam_role.iam_for_lambda.id}"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents"
+    ],
+    "Resource": "arn:${data.aws_partition.current.partition}:logs:*:*:*"
+  }]
+}
+EOF
+}
+
+resource "aws_iam_role" "iam_for_lambda" {
+  name = "iam_for_lambda_%s"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy" "iam_policy_for_sfn" {
+  name = "iam_policy_for_sfn_%s"
+  role = "${aws_iam_role.iam_for_sfn.id}"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+        "Resource": "*"
+      }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role" "iam_for_sfn" {
+  name = "iam_for_sfn_%s"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "states.${data.aws_region.current.name}.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_lambda_function" "lambda_function_test" {
+  filename = "test-fixtures/lambdatest.zip"
+  function_name = "sfn-%s"
+  role = "${aws_iam_role.iam_for_lambda.arn}"
+  handler = "exports.example"
+  runtime = "nodejs12.x"
+}
+
+resource "aws_cloudwatch_log_group" "log_group_test" {
+  name = "lg-%s"
+}
+
+resource "aws_sfn_state_machine" "foo" {
+  name     = "test_sfn_%s"
+  role_arn = "${aws_iam_role.iam_for_sfn.arn}"
+
+  logging_configuration {
+    level                  = "FATAL"
+    destination            = "${aws_cloudwatch_log_group.log_group_test.arn}"
+  }
+
+  definition = <<EOF
+{
+  "Comment": "A Hello World example of the Amazon States Language using an AWS Lambda Function",
+  "StartAt": "HelloWorld",
+  "States": {
+    "HelloWorld": {
+      "Type": "Task",
+      "Resource": "${aws_lambda_function.lambda_function_test.arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 8.0
+        }
+      ],
+      "End": true
+    }
+  }
+}
+EOF
+}
+`, rName, rName, rName, rName, rName, rName, rName)
+}
+
+func testAccAWSSfnStateMachineConfigLoggingConfiguration2(rName string) string {
+	return fmt.Sprintf(`
+data "aws_partition" "current" {}
+
+data "aws_region" "current" {}
+
+resource "aws_iam_role_policy" "iam_policy_for_lambda" {
+  name = "iam_policy_for_lambda_%s"
+  role = "${aws_iam_role.iam_for_lambda.id}"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents"
+    ],
+    "Resource": "arn:${data.aws_partition.current.partition}:logs:*:*:*"
+  }]
+}
+EOF
+}
+
+resource "aws_iam_role" "iam_for_lambda" {
+  name = "iam_for_lambda_%s"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy" "iam_policy_for_sfn" {
+  name = "iam_policy_for_sfn_%s"
+  role = "${aws_iam_role.iam_for_sfn.id}"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+        "Resource": "*"
+      }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role" "iam_for_sfn" {
+  name = "iam_for_sfn_%s"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "states.${data.aws_region.current.name}.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_lambda_function" "lambda_function_test" {
+  filename = "test-fixtures/lambdatest.zip"
+  function_name = "sfn-%s"
+  role = "${aws_iam_role.iam_for_lambda.arn}"
+  handler = "exports.example"
+  runtime = "nodejs12.x"
+}
+
+resource "aws_cloudwatch_log_group" "log_group_test" {
+  name = "lg-%s"
+}
+
+resource "aws_sfn_state_machine" "foo" {
+  name     = "test_sfn_%s"
+  role_arn = "${aws_iam_role.iam_for_sfn.arn}"
+
+  logging_configuration {
+    include_execution_data = true
+    level                  = "ALL"
+    destination            = "${aws_cloudwatch_log_group.log_group_test.arn}"
+  }
+
+  definition = <<EOF
+{
+  "Comment": "A Hello World example of the Amazon States Language using an AWS Lambda Function",
+  "StartAt": "HelloWorld",
+  "States": {
+    "HelloWorld": {
+      "Type": "Task",
+      "Resource": "${aws_lambda_function.lambda_function_test.arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 8.0
+        }
+      ],
+      "End": true
+    }
+  }
+}
+EOF
+}
+`, rName, rName, rName, rName, rName, rName, rName)
 }

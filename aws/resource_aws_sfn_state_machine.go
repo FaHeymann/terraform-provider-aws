@@ -53,9 +53,85 @@ func resourceAwsSfnStateMachine() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+
+			"logging_configuration": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"include_execution_data": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+
+						"level": {
+							Type:     schema.TypeString,
+							Required: true,
+							ValidateFunc: validation.StringInSlice([]string{
+								sfn.LogLevelAll,
+								sfn.LogLevelError,
+								sfn.LogLevelFatal,
+								sfn.LogLevelOff,
+							}, false),
+						},
+
+						"destination": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+					},
+				},
+			},
+
 			"tags": tagsSchema(),
 		},
 	}
+}
+
+func expandLoggingConfiguration(vLoggingConfiguration []interface{}) *sfn.LoggingConfiguration {
+	if len(vLoggingConfiguration) == 0 {
+		return nil
+	}
+
+	loggingConfiguration := &sfn.LoggingConfiguration{}
+
+	var mLoggingConfiguration map[string]interface{}
+	if vLoggingConfiguration[0] != nil {
+		mLoggingConfiguration = vLoggingConfiguration[0].(map[string]interface{})
+	} else {
+		mLoggingConfiguration = make(map[string]interface{})
+	}
+
+	if vIncludeExecutionData, ok := mLoggingConfiguration["include_execution_data"].(bool); ok {
+		loggingConfiguration.IncludeExecutionData = aws.Bool(vIncludeExecutionData)
+	}
+
+	if vLevel, ok := mLoggingConfiguration["level"].(string); ok && vLevel != "" {
+		loggingConfiguration.Level = aws.String(vLevel)
+	}
+
+	if vDestination, ok := mLoggingConfiguration["destination"].(string); ok && vDestination != "" {
+		destination := &sfn.LogDestination{}
+		destination.CloudWatchLogsLogGroup = &sfn.CloudWatchLogsLogGroup{}
+		destination.CloudWatchLogsLogGroup.LogGroupArn = aws.String(vDestination)
+		loggingConfiguration.Destinations = []*sfn.LogDestination{destination}
+	}
+
+	return loggingConfiguration
+}
+
+func flattenLoggingConfiguration(loggingConfiguration *sfn.LoggingConfiguration) []interface{} {
+	mLoggingConfiguration := map[string]interface{}{
+		"include_execution_data": aws.BoolValue(loggingConfiguration.IncludeExecutionData),
+		"level":                  aws.StringValue(loggingConfiguration.Level),
+	}
+
+	for _, destination := range loggingConfiguration.Destinations {
+		mLoggingConfiguration["destination"] = aws.StringValue(destination.CloudWatchLogsLogGroup.LogGroupArn)
+	}
+
+	return []interface{}{mLoggingConfiguration}
 }
 
 func resourceAwsSfnStateMachineCreate(d *schema.ResourceData, meta interface{}) error {
@@ -63,10 +139,11 @@ func resourceAwsSfnStateMachineCreate(d *schema.ResourceData, meta interface{}) 
 	log.Print("[DEBUG] Creating Step Function State Machine")
 
 	params := &sfn.CreateStateMachineInput{
-		Definition: aws.String(d.Get("definition").(string)),
-		Name:       aws.String(d.Get("name").(string)),
-		RoleArn:    aws.String(d.Get("role_arn").(string)),
-		Tags:       keyvaluetags.New(d.Get("tags").(map[string]interface{})).IgnoreAws().SfnTags(),
+		Definition:           aws.String(d.Get("definition").(string)),
+		Name:                 aws.String(d.Get("name").(string)),
+		RoleArn:              aws.String(d.Get("role_arn").(string)),
+		LoggingConfiguration: expandLoggingConfiguration(d.Get("logging_configuration").([]interface{})),
+		Tags:                 keyvaluetags.New(d.Get("tags").(map[string]interface{})).IgnoreAws().SfnTags(),
 	}
 
 	var activity *sfn.CreateStateMachineOutput
@@ -123,6 +200,7 @@ func resourceAwsSfnStateMachineRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("name", sm.Name)
 	d.Set("role_arn", sm.RoleArn)
 	d.Set("status", sm.Status)
+	d.Set("logging_configuration", flattenLoggingConfiguration(sm.LoggingConfiguration))
 
 	if err := d.Set("creation_date", sm.CreationDate.Format(time.RFC3339)); err != nil {
 		log.Printf("[DEBUG] Error setting creation_date: %s", err)
@@ -145,9 +223,10 @@ func resourceAwsSfnStateMachineUpdate(d *schema.ResourceData, meta interface{}) 
 	conn := meta.(*AWSClient).sfnconn
 
 	params := &sfn.UpdateStateMachineInput{
-		StateMachineArn: aws.String(d.Id()),
-		Definition:      aws.String(d.Get("definition").(string)),
-		RoleArn:         aws.String(d.Get("role_arn").(string)),
+		StateMachineArn:      aws.String(d.Id()),
+		Definition:           aws.String(d.Get("definition").(string)),
+		RoleArn:              aws.String(d.Get("role_arn").(string)),
+		LoggingConfiguration: expandLoggingConfiguration(d.Get("logging_configuration").([]interface{})),
 	}
 
 	_, err := conn.UpdateStateMachine(params)
